@@ -42,15 +42,15 @@ The code and experiment artifacts are reproducible; public datasets are download
 ## Run an experiment
 
 1. Download the **complete** UCI Online Retail II archive to your experiment machine from the [UCI source](https://archive.ics.uci.edu/dataset/502/online%2Bretail%2Bii). Keep the raw archive outside Git.
-2. Set the archive path and its SHA-256 in a copy of [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json). Do not change the test split during search.
+2. Copy [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json) to `task.local.json`. Set `raw_path` to the archive's absolute path and replace the zero SHA-256 with the archive's actual hash. Keep the test split fixed during search.
 3. Install and run:
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
-ltvevo prepare --task examples/online-retail-ii-task.json --output data/snapshots/retail-90d
-ltvevo baseline --task examples/online-retail-ii-task.json --snapshots data/snapshots/retail-90d \
+ltvevo prepare --task task.local.json --output data/snapshots/retail-90d
+ltvevo baseline --task task.local.json --snapshots data/snapshots/retail-90d \
   --journal runs/retail-90d/journal.json --device cuda
 ```
 
@@ -58,7 +58,7 @@ For Agent iteration, set `LTVEVO_API_KEY` and pass your provider URL and model t
 
 ```bash
 docker build -f Dockerfile.sandbox -t ltvevo-sandbox .
-ltvevo search --task examples/online-retail-ii-task.json --snapshots data/snapshots/retail-90d \
+ltvevo search --task task.local.json --snapshots data/snapshots/retail-90d \
   --journal runs/retail-90d/journal.json --steps 3 --device cuda \
   --provider-url https://api.deepseek.com --model deepseek-flash
 ltvevo finalize --journal runs/retail-90d/journal.json --snapshots data/snapshots/retail-90d \

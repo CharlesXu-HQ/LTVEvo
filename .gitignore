@@ -9,3 +9,4 @@ data/
 runs/
 .env
 .DS_Store
+/task.local.json

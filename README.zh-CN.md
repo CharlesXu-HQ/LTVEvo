@@ -42,15 +42,15 @@ flowchart LR
 ## 运行实验
 
 1. 在实验机器上从 [UCI 页面](https://archive.ics.uci.edu/dataset/502/online%2Bretail%2Bii)下载**完整** Online Retail II 压缩包；不要提交原始数据到 Git。
-2. 复制 [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json)，填入压缩包路径与 SHA-256。搜索期间不要改变测试集切分。
+2. 将 [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json) 复制为 `task.local.json`，把 `raw_path` 改为压缩包的绝对路径，并用实际 SHA-256 替换全 0 占位值。搜索期间保持测试集切分不变。
 3. 安装并准备数据：
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
-ltvevo prepare --task examples/online-retail-ii-task.json --output data/snapshots/retail-90d
-ltvevo baseline --task examples/online-retail-ii-task.json --snapshots data/snapshots/retail-90d \
+ltvevo prepare --task task.local.json --output data/snapshots/retail-90d
+ltvevo baseline --task task.local.json --snapshots data/snapshots/retail-90d \
   --journal runs/retail-90d/journal.json --device cuda
 ```
 
@@ -58,7 +58,7 @@ ltvevo baseline --task examples/online-retail-ii-task.json --snapshots data/snap
 
 ```bash
 docker build -f Dockerfile.sandbox -t ltvevo-sandbox .
-ltvevo search --task examples/online-retail-ii-task.json --snapshots data/snapshots/retail-90d \
+ltvevo search --task task.local.json --snapshots data/snapshots/retail-90d \
   --journal runs/retail-90d/journal.json --steps 3 --device cuda \
   --provider-url https://api.deepseek.com --model deepseek-flash
 ltvevo finalize --journal runs/retail-90d/journal.json --snapshots data/snapshots/retail-90d \
