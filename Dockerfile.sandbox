@@ -1,0 +1,6 @@
+FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime
+
+RUN python -m pip install --break-system-packages --no-cache-dir pandas==2.2.3
+COPY src/ltvevo/sandbox_worker.py /opt/ltvevo/sandbox_worker.py
+
+WORKDIR /tmp

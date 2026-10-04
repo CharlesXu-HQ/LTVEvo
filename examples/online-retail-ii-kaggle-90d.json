@@ -1,0 +1,16 @@
+{
+  "raw_path": "../data/raw/online_retail_II_kaggle.zip",
+  "raw_sha256": "e2a0ebc53c3b0b577ff2f3dc4eb64032a38e38f6d7a47f73e511cdcd6d5b7dbd",
+  "horizon_days": 90,
+  "as_of_start": "2010-03-01",
+  "as_of_end": "2011-09-01",
+  "train_end": "2010-09-01",
+  "validation_start": "2011-01-01",
+  "validation_end": "2011-03-01",
+  "test_start": "2011-07-01",
+  "test_end": "2011-09-01",
+  "seed": 42,
+  "target_policy": "positive_purchase_amount",
+  "primary_metric": "mae",
+  "evaluator_version": "1"
+}

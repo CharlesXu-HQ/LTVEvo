@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ltvevo"
+version = "0.1.0"
+description = "Agent-led, leakage-safe experiments for fixed-horizon customer value prediction"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "torch>=2.2",
+  "openpyxl>=3.1",
+]
+
+[project.scripts]
+ltvevo = "ltvevo.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
