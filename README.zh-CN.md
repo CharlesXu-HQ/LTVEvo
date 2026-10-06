@@ -42,6 +42,8 @@ flowchart LR
 
 **实测结果：** 在全量 Online Retail II 上，Agent 候选降低了验证集 MAE，但独立测试集 MAE 未优于历史消费基线。加入恒预测 0 参考后，明显看出这个零值较多的任务存在时间漂移和模型选择风险。数据行数、哈希、CUDA 证据、区间与限制见 [GPU 实验记录](docs/benchmarks/online-retail-ii-gpu-2026-10-04.md)。本次实验不声称模型取得了可靠提升。
 
+固定 Harness 版本的流程还在同一全量数据和 RTX 5090 上做了单独验证：确定性的 Agent 应答依次触发参考代码读取、研究与复盘校验、CUDA 训练、模型选择和最终测试。该候选模型不如恒预测 0；这次验证不能代表真实 LLM Agent 的效果。详见 [Harness GPU 集成记录](docs/benchmarks/model-evo-harness-gpu-2026-10-06.md)。
+
 ## 运行实验
 
 1. 克隆仓库和固定版本的子模块：`git clone --recurse-submodules https://github.com/CharlesXu-HQ/LTVEvo.git`，再进入 `LTVEvo` 目录。

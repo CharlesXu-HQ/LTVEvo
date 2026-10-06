@@ -42,6 +42,8 @@ The code and experiment artifacts are reproducible; public datasets are download
 
 **Measured result:** On full Online Retail II, an Agent candidate reduced validation MAE but did not improve the independent test MAE over the historical baseline. Adding the all-zero reference exposed strong temporal drift and a weak selection rule for this zero-heavy target. The exact rows, hashes, CUDA evidence, intervals, and limitations are in the [GPU experiment record](docs/benchmarks/online-retail-ii-gpu-2026-10-04.md). No positive model-improvement claim is made from this run.
 
+The pinned Harness path was separately checked on the same full dataset and RTX 5090. A deterministic Agent fixture exercised reference reading, validated research and reflection, CUDA training, journal selection, and finalization. Its candidate lost to the all-zero reference; this check does not establish live LLM performance. See the [Harness GPU integration record](docs/benchmarks/model-evo-harness-gpu-2026-10-06.md).
+
 ## Run an experiment
 
 1. Clone this repository with its pinned submodule: `git clone --recurse-submodules https://github.com/CharlesXu-HQ/LTVEvo.git`, then enter `LTVEvo`.
