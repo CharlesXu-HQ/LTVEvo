@@ -44,6 +44,8 @@ flowchart LR
 
 固定 Harness 版本的流程也在同一全量数据和 RTX 5090 上完成验证：[真实 DeepSeek V4.1 Flash 运行](docs/benchmarks/model-evo-harness-live-gpu-2026-10-06.md)执行了两轮 CUDA Agent 实验，两轮验证指标均不如恒预测 0，因此没有替换最佳模型。另一次[确定性集成验证](docs/benchmarks/model-evo-harness-gpu-2026-10-06.md)覆盖了有界参考资料读取和最终测试路径。这些结果均不支持模型质量已提升的结论。
 
+较新的[实验完整性 GPU 验证](docs/benchmarks/experiment-integrity-gpu-2026-10-06.md)在全部验证样本上检查了源码拦截、分期指标、预测产物哈希与新的模型选择记录。此次使用确定性提案，不是一次真实 Agent API 调用。
+
 ## 运行实验
 
 1. 克隆仓库和固定版本的子模块：`git clone --recurse-submodules https://github.com/CharlesXu-HQ/LTVEvo.git`，再进入 `LTVEvo` 目录。

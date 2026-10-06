@@ -44,6 +44,8 @@ The code and experiment artifacts are reproducible; public datasets are download
 
 The pinned Harness path was checked on the same full dataset and RTX 5090. A [live DeepSeek V4.1 Flash run](docs/benchmarks/model-evo-harness-live-gpu-2026-10-06.md) completed two CUDA Agent iterations; both lost to the all-zero validation reference, which remained the selected model. A separate [deterministic integration check](docs/benchmarks/model-evo-harness-gpu-2026-10-06.md) exercised bounded reference reading and finalization. Neither run establishes a model-quality gain.
 
+The newer [experiment-integrity GPU check](docs/benchmarks/experiment-integrity-gpu-2026-10-06.md) exercised source rejection, period diagnostics, prediction hashes, and the revised selection record on all validation rows. It used deterministic proposals, not a live Agent request.
+
 ## Run an experiment
 
 1. Clone this repository with its pinned submodule: `git clone --recurse-submodules https://github.com/CharlesXu-HQ/LTVEvo.git`, then enter `LTVEvo`.
