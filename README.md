@@ -19,20 +19,20 @@ flowchart LR
     M[ModelEvoHarness catalog and bounded references] --> D[Agent diagnosis and hypothesis]
     C --> D
     D --> E[PyTorch candidate in isolated runner]
-    E --> F[Fixed validation metrics]
+    E --> F[Fixed validation metrics and source audit]
     F --> G[Reflection bound to dataset and task]
     G --> D
-    F --> H[Select champion]
+    F --> H[Select provisional champion]
     H --> I[One-time test evaluation and paired interval]
 ```
 
 The task manifest freezes the raw-data SHA-256, horizon, target definition, observation dates, purged chronological splits, seed, primary metric, and evaluator version. Features are computed strictly before each observation date. Each label uses the complete future window. The Agent can change features inside its model and its PyTorch training code, but cannot change the task contract. A changed dataset or task receives a new experience identity.
 
-The self-improving part is the **experiment process**: model code and hypotheses can change after measured feedback, while the evaluator and data contract stay fixed. The Agent's own weights are not trained by this project. Experience is reusable only when the raw dataset hash and task definition match.
+The self-improving part is the **experiment process**: model code and hypotheses can change after measured feedback, while the evaluator and data contract stay fixed. The Agent's own weights are not trained by this project. Experience is reusable only when the task, raw and split hashes, and evaluator version match. Each imported lesson records its source journal and candidate hashes; an implementation without a host verification remains `unverified`. A run freezes its Harness version, while a same-task lesson from another Harness version remains labeled with its origin rather than becoming proof for the current run.
 
 In `--harness model-evo` mode, the pinned [ModelEvoHarness](https://github.com/CharlesXu-HQ/ModelEvoHarness) submodule supplies research-family applicability, bounded PyTorch reference reading, and validation of each hypothesis and reflection. LTVEvo supplies a local `ltv_prediction` family because the upstream catalog has no LTV regression family. LTVEvo continues to own the Agent provider, frozen data, GPU sandbox, metrics, journal, exact-dataset experience, and final holdout, following the host/harness boundary used by [CouponEvo](https://github.com/CharlesXu-HQ/CouponEvo). A ready research family describes an experiment direction; it is not evidence that a model improves MAE. The submodule commit and catalog/implementation hashes become part of the run identity, so changing them starts a new experiment.
 
-**Selection uses validation MAE.** Reports also include RMSE, normalized Gini, top-decile value capture, decile calibration, and a paired customer-cluster bootstrap interval against the historical baseline. The interval describes uncertainty in the *offline prediction difference*; it is not an estimate of marketing lift. A final test result is produced once, after selection.
+**Selection uses validation MAE with a paired evidence gate.** A generated candidate replaces the current validation champion only if its MAE is lower, the paired customer-cluster bootstrap interval against that champion has a positive lower bound, its source audit finds no concrete contradiction, and anomaly review and reflection allow it. The audit catches specific unsafe patterns; `unverified` does not mean the implementation has been proven correct. Reports also include RMSE, normalized Gini, top-decile value capture, decile calibration, and MAE and target prevalence by observation period. These period diagnostics expose shifts within the frozen validation split; they are not a rolling backtest. Reusing validation for Agent iterations makes its interval a screening signal, not independent confirmation. The interval describes *offline prediction error*, not marketing lift. A final test result is produced once, after selection.
 
 ## Status and boundaries
 

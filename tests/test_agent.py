@@ -48,6 +48,9 @@ def test_harness_proposal_uses_research_validator_without_sending_catalog_to_pro
                                                   "harness_runtime": runtime})
     assert result["research"]["input_fields"] == ["recency_days"]
     assert validator.call_count == 1
+    instruction = request.call_args.args[1]
+    assert "unverified" in instruction
+    assert "non-finite" in instruction
     sent = request.call_args.args[2]
     assert sent["best_id"] == "zero_reference"
     assert sent["harness"] == runtime["prompt_context"]
@@ -125,6 +128,23 @@ def test_harness_reflection_requires_non_observable_business_and_validates_techn
     assert result["technical_experience"]["attribution"] == "unverified"
     assert validator.call_count == 1
     assert "harness_runtime" not in request.call_args.args[2]
+
+
+def test_harness_reflection_receives_host_implementation_contradiction():
+    answer = {"verdict": "invalid", "evidence": "source masks nonfinite predictions",
+              "lesson": "remove the fallback", "next_direction": "retry without masking",
+              "technical_experience": {"lesson": "remove the fallback",
+                                       "evidence": "host source audit",
+                                       "uncertainty": "other code paths unreviewed",
+                                       "next_test": "rerun corrected candidate"},
+              "business_experience": {"status": "not_observable", "reason": "no treatment data"}}
+    observation = {"status": "failed", "research": _research(),
+                   "implementation_check": {"status": "contradicted",
+                                            "findings": ["silent zero fallback"]},
+                   "harness_runtime": _runtime(), "harness_steps": []}
+    with patch("ltvevo.agent._call", return_value=answer):
+        result = reflect_experiment(_provider(), observation)
+    assert result["technical_experience"]["implementation_status"] == "contradicted"
 
 
 def test_harness_reflection_rejects_business_claim_after_bounded_retry():

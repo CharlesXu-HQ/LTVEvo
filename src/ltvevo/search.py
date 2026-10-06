@@ -13,7 +13,9 @@ import pandas as pd
 
 from .agent import (analyze_final_report, diagnose_history, propose_candidate,
                     reflect_experiment, review_anomaly, review_final_anomaly)
-from .evaluation import paired_mae_interval, summarize
+from .candidate_audit import audit_candidate
+from .evaluation import paired_mae_interval, summarize, summarize_by_period
+from .experience import load_experience as _experience
 from .provider import ApiProvider
 from .sandbox import DockerSandbox
 from .task import TaskSpec
@@ -86,6 +88,14 @@ def _candidate_path(root: Path, entry: dict) -> Path:
     return path
 
 
+def _ensure_audit(root: Path, entry: dict) -> None:
+    if "implementation_check" not in entry:
+        entry["implementation_check"] = audit_candidate(
+            _candidate_path(root, entry).read_text(),
+            entry["hypothesis"], entry["expected_result"])
+    entry.setdefault("change_audit", {"status": "unverified"})
+
+
 def _entries(journal: dict) -> list[dict]:
     return [journal["baseline"], journal["zero_reference"],
             journal["torch_seed"], *journal["steps"]]
@@ -135,7 +145,7 @@ def _evaluate(root: Path, candidate: Path, split: str, snapshots: Path,
     train = pd.read_csv(snapshots / "train.csv")
     target = pd.read_csv(snapshots / f"{split}.csv")
     required_train = [*features, _TARGET]
-    required_target = [*features, _TARGET, _ID]
+    required_target = [*features, _TARGET, _ID, "as_of"]
     if any(name not in train for name in required_train) or any(name not in target for name in required_target):
         raise ValueError("snapshot columns do not match metadata")
     result = sandbox.predict(candidate, train.loc[:, required_train],
@@ -143,10 +153,14 @@ def _evaluate(root: Path, candidate: Path, split: str, snapshots: Path,
                              target_column=_TARGET, seed=seed, device=device)
     predictions = np.asarray(result["predictions"], dtype=float)
     metrics = summarize(target[_TARGET], predictions, target[_ID])
+    period_metrics = summarize_by_period(target[_TARGET], predictions,
+                                         target[_ID], target["as_of"])
     path = root / "predictions" / f"{split}-{identifier}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"prediction": predictions}).to_csv(path, index=False)
-    return {"metrics": metrics, "predictions": str(path.relative_to(root)),
+    return {"metrics": metrics, "period_metrics": period_metrics,
+            "predictions": str(path.relative_to(root)),
+            "predictions_sha256": _sha(path),
             "model_device": result.get("model_device"),
             "prediction_device": result.get("prediction_device"),
             "negative_predictions": int((predictions < 0).sum()),
@@ -154,7 +168,12 @@ def _evaluate(root: Path, candidate: Path, split: str, snapshots: Path,
 
 
 def _predictions(root: Path, entry: dict) -> np.ndarray:
-    return pd.read_csv(root / entry["predictions"])["prediction"].to_numpy(float)
+    path = (root / entry["predictions"]).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
+        raise ValueError("prediction artifact changed or is outside the run")
+    if "predictions_sha256" in entry and _sha(path) != entry["predictions_sha256"]:
+        raise ValueError("prediction artifact changed after evaluation")
+    return pd.read_csv(path)["prediction"].to_numpy(float)
 
 
 def _paired(root: Path, baseline: dict, candidate: dict, snapshots: Path,
@@ -162,40 +181,6 @@ def _paired(root: Path, baseline: dict, candidate: dict, snapshots: Path,
     frame = pd.read_csv(snapshots / f"{split}.csv", usecols=[_ID, _TARGET])
     return paired_mae_interval(frame[_TARGET], _predictions(root, baseline),
                                _predictions(root, candidate), frame[_ID], seed=seed)
-
-
-def _experience(journal_path: Path, task: dict, limit: int = 8) -> list[dict]:
-    """Load validation lessons from finalized sibling runs with an identical dataset/task."""
-    lessons = []
-    for path in sorted(journal_path.parent.parent.glob("*/*.json"), reverse=True):
-        if path == journal_path:
-            continue
-        try:
-            previous = json.loads(path.read_text())
-            current = previous["task"]
-            keys = ("task_fingerprint", "raw_sha256", "split_sha256", "evaluator_version")
-            if (previous.get("version") not in {1, _JOURNAL_VERSION} or "final" not in previous
-                    or any(current[key] != task[key] for key in keys)):
-                continue
-            for step in reversed(previous.get("steps", [])):
-                if "reflection" not in step:
-                    continue
-                lesson = {"run": path.parent.name,
-                          "hypothesis": step["hypothesis"][:500],
-                          "validation_mae": step.get("metrics", {}).get("mae"),
-                          "status": step["status"],
-                          "verdict": step["reflection"]["verdict"],
-                          "lesson": step["reflection"]["lesson"][:500]}
-                if "research" in step:
-                    lesson["research"] = step["research"]
-                if "technical_experience" in step["reflection"]:
-                    lesson["technical_experience"] = step["reflection"]["technical_experience"]
-                lessons.append(lesson)
-                if len(lessons) >= limit:
-                    return lessons
-        except (KeyError, ValueError, OSError, TypeError):
-            continue
-    return lessons
 
 
 def _context(journal: dict, root: Path, harness_runtime: dict | None = None) -> dict:
@@ -209,8 +194,9 @@ def _context(journal: dict, root: Path, harness_runtime: dict | None = None) -> 
                                       "metrics": entry.get("metrics"), "status": entry["status"]}
     history = [{key: entry[key] for key in ("id", "status", "hypothesis", "expected_result",
                                            "research", "reference_reads", "reference_id",
-                                           "metrics", "paired_mae_interval",
-                                           "paired_vs_reference", "reflection", "error")
+                                           "metrics", "period_metrics", "paired_mae_interval",
+                                           "paired_vs_reference", "implementation_check",
+                                           "selection", "reflection", "error")
                 if key in entry} for entry in _entries(journal)]
     context = {"task_fingerprint": journal["task"]["task_fingerprint"],
             "raw_sha256": journal["task"]["raw_sha256"],
@@ -255,6 +241,27 @@ def _anomaly_reasons(candidate: dict, reference: dict) -> list[str]:
             and previous_capture is not None and current_capture < previous_capture - 0.2):
         reasons.append("MAE improved while top-decile capture deteriorated sharply")
     return reasons
+
+
+def _promotion_decision(candidate: dict, reference: dict) -> dict:
+    """Use paired validation evidence for a provisional champion choice."""
+    reason = None
+    if candidate.get("implementation_check", {}).get("status") == "contradicted":
+        reason = "implementation_contradicted"
+    elif candidate["status"] != "evaluated":
+        reason = "not_evaluated"
+    elif candidate["review"]["decision"] != "allow":
+        reason = "anomaly_blocked"
+    elif candidate["reflection"]["verdict"] == "invalid":
+        reason = "invalid_reflection"
+    elif candidate["metrics"]["mae"] >= reference["metrics"]["mae"]:
+        reason = "no_point_gain"
+    elif candidate["paired_vs_reference"]["ci_lower"] <= 0:
+        reason = "paired_gain_uncertain"
+    return {"decision": "retain" if reason else "promote",
+            "reason": reason or "paired_gain_positive",
+            "reference_id": reference["id"],
+            "policy": "paired_customer_bootstrap_95_v1"}
 
 
 def _state_profile(snapshots: Path, features: list[str]) -> dict:
@@ -397,6 +404,8 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
             raise ValueError("search task, snapshots, device, or sandbox image changed")
         for entry in _entries(journal):
             _candidate_path(journal_path.parent, entry)
+            if "predictions" in entry:
+                _predictions(journal_path.parent, entry)
         if "final" in journal and steps > len(journal["steps"]):
             raise ValueError("search was already finalized")
     else:
@@ -417,7 +426,11 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
         pending = next((entry for entry in journal["steps"] if entry["status"] == "pending"), None)
         if pending is not None:
             candidate = _candidate_path(root, pending)
+            _ensure_audit(root, pending)
             try:
+                if pending.get("implementation_check", {}).get("status") == "contradicted":
+                    raise ValueError("candidate source contradicts hypothesis: " + "; ".join(
+                        pending["implementation_check"]["findings"]))
                 evaluated = _evaluate(root, candidate, "validation", snapshots, sandbox,
                                       features, seed, device, identifier=pending["id"])
                 pending.update(evaluated)
@@ -438,6 +451,7 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
                             if entry["status"] in {"evaluated", "failed"}
                             and "reflection" not in entry), None)
         if unreflected is not None:
+            _ensure_audit(root, unreflected)
             if unreflected["status"] == "evaluated" and "review" not in unreflected:
                 reference = _find(journal, unreflected["reference_id"])
                 reasons = _anomaly_reasons(unreflected, reference)
@@ -465,6 +479,10 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
                            "candidate_metrics": unreflected.get("metrics"),
                            "paired_mae_interval": unreflected.get("paired_mae_interval"),
                            "paired_vs_reference": unreflected.get("paired_vs_reference"),
+                           "implementation_check": unreflected.get("implementation_check",
+                                                                   {"status": "unverified"}),
+                           "change_audit": unreflected.get("change_audit",
+                                                           {"status": "unverified"}),
                            "review": unreflected.get("review"),
                            "error": unreflected.get("error")}
             if harness_runtime is not None:
@@ -472,11 +490,9 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
                 observation["harness_steps"] = journal["steps"]
                 observation["research"] = unreflected.get("research")
             unreflected["reflection"] = reflect_experiment(provider, observation)
-            if (unreflected["status"] == "evaluated"
-                    and unreflected["review"]["decision"] == "allow"
-                    and unreflected["reflection"]["verdict"] != "invalid"
-                    and unreflected["metrics"]["mae"] <
-                    _find(journal, journal["best_id"])["metrics"]["mae"]):
+            unreflected["selection"] = _promotion_decision(
+                unreflected, _find(journal, journal["best_id"]))
+            if unreflected["selection"]["decision"] == "promote":
                 journal["best_id"] = unreflected["id"]
             _save(journal_path, journal)
             continue
@@ -498,6 +514,8 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
             _save(journal_path, journal)
             continue
         source = _validate_source(proposal["candidate_py"])
+        implementation_check = audit_candidate(
+            source, proposal["hypothesis"], proposal["expected_result"])
         existing = {_sha(_candidate_path(root, entry)) for entry in _entries(journal)}
         digest = hashlib.sha256(source.encode()).hexdigest()
         if digest in existing:
@@ -508,6 +526,8 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
         step = {"id": identifier, "status": "pending", "candidate": str(candidate.relative_to(root)),
                 "sha256": digest, "hypothesis": proposal["hypothesis"],
                 "expected_result": proposal["expected_result"],
+                "implementation_check": implementation_check,
+                "change_audit": {"status": "unverified"},
                 "reference_id": journal["best_id"],
                 "feature_requests": proposal.get("feature_requests", [])}
         if harness_runtime is not None:
@@ -538,11 +558,15 @@ def finalize_search(journal_path: str | Path, snapshot_dir: str | Path, *,
         raise ValueError("finalization task, snapshots, device, or sandbox image changed")
     if _sha(snapshots / "test.csv") != task["split_sha256"]["test"]:
         raise ValueError("test snapshot changed after preparation")
-    if "final" in journal:
-        return _complete_final_analysis(journal, journal_path, provider)
     root = journal_path.parent
     for entry in _entries(journal):
         _candidate_path(root, entry)
+        if "predictions" in entry:
+            _predictions(root, entry)
+    if "final" in journal:
+        for key in ("baseline", "zero_reference", "champion"):
+            _predictions(root, journal["final"][key])
+        return _complete_final_analysis(journal, journal_path, provider)
     sandbox = DockerSandbox(docker_image)
     baseline = _evaluate(root, _candidate_path(root, journal["baseline"]), "test",
                          snapshots, sandbox, features, seed, device, identifier="baseline")

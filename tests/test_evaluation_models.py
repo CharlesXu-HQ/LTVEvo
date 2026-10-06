@@ -7,6 +7,7 @@ import pandas as pd
 
 from ltvevo.candidates.baseline import fit_predict as baseline_predict
 from ltvevo.candidates.torch_mlp import fit_predict as torch_predict
+from ltvevo import evaluation
 from ltvevo.evaluation import paired_mae_interval, summarize
 
 
@@ -69,6 +70,20 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(interval["mae_improvement"], 2.0)
         self.assertEqual(interval["ci_lower"], 2.0)
         self.assertEqual(interval["ci_upper"], 2.0)
+
+    def test_period_diagnostics_show_temporal_error_and_target_shift(self):
+        periods = evaluation.summarize_by_period(
+            [0, 10, 2, 4], [0, 8, 0, 0], ["a", "b", "a", "c"],
+            ["2011-01-01", "2011-01-01", "2011-02-01", "2011-02-01"],
+        )
+
+        self.assertEqual([item["period"] for item in periods],
+                         ["2011-01-01", "2011-02-01"])
+        self.assertEqual(periods[0]["mae"], 1.0)
+        self.assertEqual(periods[0]["target_mean"], 5.0)
+        self.assertEqual(periods[0]["target_zero_rate"], 0.5)
+        self.assertEqual(periods[1]["mae"], 3.0)
+        self.assertEqual(periods[1]["customers"], 2)
 
 
 class CandidateTests(unittest.TestCase):

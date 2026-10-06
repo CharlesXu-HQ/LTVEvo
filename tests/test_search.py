@@ -72,7 +72,7 @@ def test_search_seals_test_labels_resumes_and_finalizes_once(tmp_path, monkeypat
             name = Path(candidate).name
             values = ([1.0, 1.0] if name == "baseline.py" else
                       [0.0, 0.0] if name == "zero.py" else
-                      [2.0, 3.0] if name == "torch_mlp.py" else [2.0, 4.0])
+                          [1.0, 3.0] if name == "torch_mlp.py" else [2.0, 4.0])
             return {"predictions": np.asarray(values), "model_device": "cpu",
                     "cuda_peak_bytes": 0}
 
@@ -102,12 +102,16 @@ def test_search_seals_test_labels_resumes_and_finalizes_once(tmp_path, monkeypat
     assert journal["version"] == 2
     assert journal["zero_reference"]["metrics"]["mae"] == 3.0
     assert journal["best_id"] == "step-001"
+    assert journal["steps"][0]["selection"]["decision"] == "promote"
+    assert journal["steps"][0]["paired_vs_reference"]["ci_lower"] > 0
     assert journal["steps"][0]["reference_id"] == "torch_seed"
     assert reflections[0]["reference_metrics"] == journal["torch_seed"]["metrics"]
     assert reflections[0]["paired_vs_reference"]["mae_improvement"] > 0
     assert set(journal["state_profile"]) == {"train", "validation"}
     assert journal["state_profile"]["validation"]["target_mean"] == 3.0
     assert "state_profile" in contexts[0]
+    assert "period_metrics" in contexts[0]
+    assert journal["baseline"]["period_metrics"][0]["period"] == "2010-01-01"
     assert contexts and all("9999" not in context for context in contexts)
     assert len(seen_inputs) == 4
 
@@ -125,6 +129,13 @@ def test_search_seals_test_labels_resumes_and_finalizes_once(tmp_path, monkeypat
     finalized_again = finalize_search(journal_path, snapshots, device="cpu", docker_image="fake-image")
     assert finalized_again["final"] == finalized["final"]
     assert len(seen_inputs) == 7
+
+    test_prediction = journal_path.parent / finalized["final"]["champion"]["predictions"]
+    original_prediction = test_prediction.read_bytes()
+    test_prediction.write_bytes(original_prediction.replace(b"2.0", b"8.0"))
+    with pytest.raises(ValueError, match="prediction artifact changed"):
+        finalize_search(journal_path, snapshots, device="cpu", docker_image="fake-image")
+    test_prediction.write_bytes(original_prediction)
 
     test_file = snapshots / "test.csv"
     original = test_file.read_bytes()
@@ -514,7 +525,88 @@ def test_experience_is_exact_task_bound_and_excludes_test_results(tmp_path):
     assert len(selected) == 2
     assert {item["run"] for item in selected} == {"same", "old_same"}
     assert all(item["lesson"] == "keep this transform" for item in selected)
+    assert all(item["implementation_reliability"] == "unverified" for item in selected)
+    assert all(len(item["source"]["journal_sha256"]) == 64 for item in selected)
     assert "9999" not in json.dumps(selected)
+
+
+def test_promotion_requires_paired_support_and_no_source_contradiction():
+    from ltvevo import search
+
+    best = {"id": "baseline", "metrics": {"mae": 10.0}}
+    candidate = {"status": "evaluated", "metrics": {"mae": 9.0},
+                 "paired_vs_reference": {"mae_improvement": 1.0, "ci_lower": -0.2},
+                 "review": {"decision": "allow"},
+                 "reflection": {"verdict": "consistent"},
+                 "implementation_check": {"status": "unverified", "findings": []}}
+    assert search._promotion_decision(candidate, best) == {
+        "decision": "retain", "reason": "paired_gain_uncertain", "reference_id": "baseline",
+        "policy": "paired_customer_bootstrap_95_v1"}
+    candidate["paired_vs_reference"]["ci_lower"] = 0.2
+    assert search._promotion_decision(candidate, best)["decision"] == "promote"
+    candidate["implementation_check"] = {"status": "contradicted", "findings": ["silent fallback"]}
+    assert search._promotion_decision(candidate, best)["reason"] == "implementation_contradicted"
+
+
+def test_source_contradiction_is_recorded_without_running_candidate(tmp_path, monkeypatch):
+    from ltvevo import search
+
+    task_path, snapshots = _task_and_snapshots(tmp_path)
+    journal_path = tmp_path / "runs" / "audited" / "journal.json"
+    seen = []
+
+    class FakeSandbox:
+        def __init__(self, _image):
+            pass
+
+        def predict(self, candidate, _train, target, **_kwargs):
+            seen.append(Path(candidate).name)
+            return {"predictions": np.zeros(len(target)), "model_device": "cpu"}
+
+    source = ("import torch\n"
+              "def fit_predict(train, validation, *, feature_columns, target_column, device, seed):\n"
+              "    prediction = torch.ones(len(validation))\n"
+              "    if not torch.isfinite(prediction).all():\n"
+              "        prediction = torch.zeros_like(prediction)\n"
+              "    return prediction\n")
+    monkeypatch.setattr(search, "DockerSandbox", FakeSandbox)
+    monkeypatch.setattr(search, "propose_candidate", lambda *_: {
+        "action": "experiment", "hypothesis": "model reduces MAE",
+        "expected_result": "lower MAE", "candidate_py": source})
+    monkeypatch.setattr(search, "reflect_experiment", lambda _provider, observation: {
+        "verdict": "invalid", "evidence": observation["implementation_check"]["findings"][0],
+        "lesson": "remove fallback", "next_direction": "retry"})
+    provider = ApiProvider("https://example.com", "model", "secret")
+
+    journal = run_search(task_path, snapshots, journal_path, provider, steps=1,
+                         device="cpu", docker_image="fake-image")
+    step = journal["steps"][0]
+    assert step["status"] == "failed"
+    assert step["implementation_check"]["status"] == "contradicted"
+    assert step["selection"]["reason"] == "implementation_contradicted"
+    assert seen == ["baseline.py", "zero.py", "torch_mlp.py"]
+
+    for key in ("implementation_check", "reflection", "selection", "error"):
+        step.pop(key)
+    step["status"] = "pending"
+    journal_path.write_text(json.dumps(journal))
+    resumed = run_search(task_path, snapshots, journal_path, provider, steps=1,
+                         device="cpu", docker_image="fake-image")
+    assert resumed["steps"][0]["implementation_check"]["status"] == "contradicted"
+    assert seen == ["baseline.py", "zero.py", "torch_mlp.py"]
+
+
+def test_prediction_artifact_hash_detects_tampering(tmp_path):
+    from ltvevo import search
+
+    prediction = tmp_path / "predictions.csv"
+    prediction.write_text("prediction\n1.0\n")
+    entry = {"predictions": "predictions.csv", "predictions_sha256":
+             hashlib.sha256(prediction.read_bytes()).hexdigest()}
+    assert search._predictions(tmp_path, entry).tolist() == [1.0]
+    prediction.write_text("prediction\n2.0\n")
+    with pytest.raises(ValueError, match="prediction artifact changed"):
+        search._predictions(tmp_path, entry)
 
 
 def test_candidate_source_rejects_obvious_dynamic_imports():

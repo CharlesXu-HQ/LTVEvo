@@ -70,6 +70,27 @@ def summarize(y_true, pred, customer_ids) -> dict:
     }
 
 
+def summarize_by_period(y_true, pred, customer_ids, periods) -> list[dict]:
+    """Expose time-window error without using held-out test rows during search."""
+    actual, predicted, customers = _checked_inputs(y_true, pred, customer_ids)
+    dates = pd.Series(periods, dtype="string")
+    if len(dates) != len(actual) or dates.isna().any():
+        raise ValueError("periods must be present for every prediction")
+    result = []
+    for period in sorted(dates.unique()):
+        rows = (dates == period).to_numpy()
+        target = actual[rows]
+        result.append({
+            "period": str(period),
+            "rows": int(rows.sum()),
+            "customers": int(customers[rows].nunique()),
+            "mae": float(np.abs(target - predicted[rows]).mean()),
+            "target_mean": float(target.mean()),
+            "target_zero_rate": float(np.mean(target == 0)),
+        })
+    return result
+
+
 def paired_mae_interval(
     y_true, baseline_pred, candidate_pred, customer_ids, *, seed: int, reps: int = 1000
 ) -> dict:
