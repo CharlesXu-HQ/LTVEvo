@@ -16,7 +16,8 @@ The Retail II target is positive purchase amount **before refunds**, not net rev
 flowchart LR
     A[Full raw transactions] --> B[Frozen task and time-safe snapshots]
     B --> C[Historical baseline]
-    C --> D[Agent diagnosis and hypothesis]
+    M[ModelEvoHarness catalog and bounded references] --> D[Agent diagnosis and hypothesis]
+    C --> D
     D --> E[PyTorch candidate in isolated runner]
     E --> F[Fixed validation metrics]
     F --> G[Reflection bound to dataset and task]
@@ -28,6 +29,8 @@ flowchart LR
 The task manifest freezes the raw-data SHA-256, horizon, target definition, observation dates, purged chronological splits, seed, primary metric, and evaluator version. Features are computed strictly before each observation date. Each label uses the complete future window. The Agent can change features inside its model and its PyTorch training code, but cannot change the task contract. A changed dataset or task receives a new experience identity.
 
 The self-improving part is the **experiment process**: model code and hypotheses can change after measured feedback, while the evaluator and data contract stay fixed. The Agent's own weights are not trained by this project. Experience is reusable only when the raw dataset hash and task definition match.
+
+In `--harness model-evo` mode, the pinned [ModelEvoHarness](https://github.com/CharlesXu-HQ/ModelEvoHarness) submodule supplies research-family applicability, bounded PyTorch reference reading, and validation of each hypothesis and reflection. LTVEvo supplies a local `ltv_prediction` family because the upstream catalog has no LTV regression family. LTVEvo continues to own the Agent provider, frozen data, GPU sandbox, metrics, journal, exact-dataset experience, and final holdout, following the host/harness boundary used by [CouponEvo](https://github.com/CharlesXu-HQ/CouponEvo). A ready research family describes an experiment direction; it is not evidence that a model improves MAE. The submodule commit and catalog/implementation hashes become part of the run identity, so changing them starts a new experiment.
 
 **Selection uses validation MAE.** Reports also include RMSE, normalized Gini, top-decile value capture, decile calibration, and a paired customer-cluster bootstrap interval against the historical baseline. The interval describes uncertainty in the *offline prediction difference*; it is not an estimate of marketing lift. A final test result is produced once, after selection.
 
@@ -41,17 +44,19 @@ The code and experiment artifacts are reproducible; public datasets are download
 
 ## Run an experiment
 
-1. Download the **complete** UCI Online Retail II archive to your experiment machine from the [UCI source](https://archive.ics.uci.edu/dataset/502/online%2Bretail%2Bii). Keep the raw archive outside Git.
-2. Copy [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json) to `task.local.json`. Set `raw_path` to the archive's absolute path and replace the zero SHA-256 with the archive's actual hash. Keep the test split fixed during search.
-3. Install and run:
+1. Clone this repository with its pinned submodule: `git clone --recurse-submodules https://github.com/CharlesXu-HQ/LTVEvo.git`, then enter `LTVEvo`.
+2. Download the **complete** UCI Online Retail II archive to your experiment machine from the [UCI source](https://archive.ics.uci.edu/dataset/502/online%2Bretail%2Bii). Keep the raw archive outside Git.
+3. Copy [`examples/online-retail-ii-task.json`](examples/online-retail-ii-task.json) to `task.local.json`. Set `raw_path` to the archive's absolute path and replace the zero SHA-256 with the archive's actual hash. Keep the test split fixed during search.
+4. Install and run with Python 3.12:
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
+pip install -e ./third_party/model-evo-harness
 ltvevo prepare --task task.local.json --output data/snapshots/retail-90d
 ltvevo baseline --task task.local.json --snapshots data/snapshots/retail-90d \
-  --journal runs/retail-90d/journal.json --device cuda
+  --journal runs/retail-90d/journal.json --device cuda --harness model-evo
 ```
 
 For Agent iteration, set `LTVEVO_API_KEY` and pass your provider URL and model to `ltvevo search`. The candidate runner needs a Docker image built from `Dockerfile.sandbox` with NVIDIA container access for `--device cuda`. `ltvevo finalize` evaluates the selected candidate on the sealed test split. The CLI help lists all options.
@@ -59,11 +64,15 @@ For Agent iteration, set `LTVEVO_API_KEY` and pass your provider URL and model t
 ```bash
 docker build -f Dockerfile.sandbox -t ltvevo-sandbox .
 ltvevo search --task task.local.json --snapshots data/snapshots/retail-90d \
-  --journal runs/retail-90d/journal.json --steps 3 --device cuda \
-  --provider-url https://api.deepseek.com --model deepseek-flash
+  --journal runs/retail-90d/journal.json --steps 3 --device cuda --harness model-evo \
+  --provider-url https://api.deepseek.com --model YOUR_MODEL
 ltvevo finalize --journal runs/retail-90d/journal.json --snapshots data/snapshots/retail-90d \
-  --device cuda --provider-url https://api.deepseek.com --model deepseek-flash
+  --device cuda --provider-url https://api.deepseek.com --model YOUR_MODEL
 ```
+
+Choose the Harness mode when creating a run; resume and finalization infer it from the journal. The base mode remains available for reading or continuing older journals. Harness mode requires Python 3.12 and its separately installed submodule. See [the adapter contract](docs/specs/2026-10-06-model-evo-harness-alignment.md) for the research and provenance boundary.
+
+Provider payloads can be adjusted with `--thinking enabled|disabled|omit`. Use `--omit-reasoning-effort` only when a provider rejects that field; in that case the configured `high`/`max` levels remain local routing labels and the provider may not honor them. The API key is read only from `LTVEVO_API_KEY`.
 
 ## Contributing
 

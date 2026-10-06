@@ -71,9 +71,12 @@ def _identity(task_path: Path, snapshots: Path, device: str, image: str) -> tupl
 def _agent_info(provider: ApiProvider | None) -> dict | None:
     if provider is None:
         return None
-    return {"url": provider.url, "model": provider.model, "thinking": provider.thinking,
+    info = {"url": provider.url, "model": provider.model, "thinking": provider.thinking,
             "iteration_effort": provider.iteration_effort,
             "review_effort": provider.review_effort}
+    if not provider.send_reasoning_effort:
+        info["send_reasoning_effort"] = False
+    return info
 
 
 def _candidate_path(root: Path, entry: dict) -> Path:
@@ -177,11 +180,17 @@ def _experience(journal_path: Path, task: dict, limit: int = 8) -> list[dict]:
             for step in reversed(previous.get("steps", [])):
                 if "reflection" not in step:
                     continue
-                lessons.append({"run": path.parent.name, "hypothesis": step["hypothesis"][:500],
-                                "validation_mae": step.get("metrics", {}).get("mae"),
-                                "status": step["status"],
-                                "verdict": step["reflection"]["verdict"],
-                                "lesson": step["reflection"]["lesson"][:500]})
+                lesson = {"run": path.parent.name,
+                          "hypothesis": step["hypothesis"][:500],
+                          "validation_mae": step.get("metrics", {}).get("mae"),
+                          "status": step["status"],
+                          "verdict": step["reflection"]["verdict"],
+                          "lesson": step["reflection"]["lesson"][:500]}
+                if "research" in step:
+                    lesson["research"] = step["research"]
+                if "technical_experience" in step["reflection"]:
+                    lesson["technical_experience"] = step["reflection"]["technical_experience"]
+                lessons.append(lesson)
                 if len(lessons) >= limit:
                     return lessons
         except (KeyError, ValueError, OSError, TypeError):
@@ -189,7 +198,7 @@ def _experience(journal_path: Path, task: dict, limit: int = 8) -> list[dict]:
     return lessons
 
 
-def _context(journal: dict, root: Path) -> dict:
+def _context(journal: dict, root: Path, harness_runtime: dict | None = None) -> dict:
     chosen = {"baseline", "zero_reference", "torch_seed", journal["best_id"]}
     if journal["steps"]:
         chosen.add(journal["steps"][-1]["id"])
@@ -199,10 +208,11 @@ def _context(journal: dict, root: Path) -> dict:
             available[entry["id"]] = {"candidate_py": _candidate_path(root, entry).read_text(),
                                       "metrics": entry.get("metrics"), "status": entry["status"]}
     history = [{key: entry[key] for key in ("id", "status", "hypothesis", "expected_result",
-                                           "reference_id", "metrics", "paired_mae_interval",
+                                           "research", "reference_reads", "reference_id",
+                                           "metrics", "paired_mae_interval",
                                            "paired_vs_reference", "reflection", "error")
                 if key in entry} for entry in _entries(journal)]
-    return {"task_fingerprint": journal["task"]["task_fingerprint"],
+    context = {"task_fingerprint": journal["task"]["task_fingerprint"],
             "raw_sha256": journal["task"]["raw_sha256"],
             "target_policy": journal["task"]["target_policy"],
             "feature_columns": journal["task"]["feature_columns"],
@@ -211,6 +221,9 @@ def _context(journal: dict, root: Path) -> dict:
             "history": history, "available": available,
             "experience": journal.get("experience", []),
             "diagnoses": journal.get("diagnoses", [])}
+    if harness_runtime is not None:
+        context["harness_runtime"] = harness_runtime
+    return context
 
 
 def _feature_requests(root: Path, journal: dict) -> None:
@@ -312,7 +325,8 @@ def _complete_final_analysis(journal: dict, journal_path: Path,
 
 def _initialize(task_path: Path, snapshots: Path, journal_path: Path,
                 task: dict, features: list[str], seed: int,
-                sandbox: DockerSandbox, device: str) -> dict:
+                sandbox: DockerSandbox, device: str,
+                harness_runtime: dict | None = None) -> dict:
     root = journal_path.parent
     if root.exists():
         raise ValueError("search directory already exists without a journal")
@@ -339,6 +353,9 @@ def _initialize(task_path: Path, snapshots: Path, journal_path: Path,
                    "zero_reference": entries["zero_reference"],
                    "torch_seed": entries["torch_seed"],
                    "steps": [], "diagnoses": [], "best_id": best}
+        if harness_runtime is not None:
+            journal["harness"] = {"mode": "model-evo",
+                                  "task_snapshot": harness_runtime["task_snapshot"]}
         _save(journal_path, journal)
         return journal
     except Exception:
@@ -348,18 +365,32 @@ def _initialize(task_path: Path, snapshots: Path, journal_path: Path,
 
 def run_search(task_path: str | Path, snapshot_dir: str | Path,
                journal_path: str | Path, provider: ApiProvider | None,
-               steps: int, device: str = "cuda", docker_image: str = "ltvevo-sandbox") -> dict:
+               steps: int, device: str = "cuda", docker_image: str = "ltvevo-sandbox",
+               harness: str | None = None) -> dict:
     """Run at most `steps` Agent experiments; test.csv is never read here."""
     if steps < 0 or device not in {"cpu", "cuda"}:
         raise ValueError("steps must be nonnegative and device must be cpu or cuda")
     if steps and provider is None:
         raise ValueError("an Agent provider is required for positive steps")
+    if harness not in {None, "none", "model-evo"}:
+        raise ValueError("harness must be none or model-evo")
     task_path, snapshots, journal_path = (Path(path).resolve() for path in
                                           (task_path, snapshot_dir, journal_path))
     task, features, seed = _identity(task_path, snapshots, device, docker_image)
+    existing = json.loads(journal_path.read_text()) if journal_path.exists() else None
+    previous_mode = (existing.get("harness") or {}).get("mode", "none") if existing else "none"
+    if existing is not None and harness is not None and harness != previous_mode:
+        raise ValueError("search Harness mode changed during resume")
+    mode = previous_mode if existing is not None else (harness or "none")
+    harness_runtime = None
+    if mode == "model-evo":
+        from .harness import build_harness_context
+
+        harness_runtime = build_harness_context(task_path, snapshots, task)
+        task["harness_identity"] = harness_runtime["identity"]
     sandbox = DockerSandbox(docker_image)
-    if journal_path.exists():
-        journal = json.loads(journal_path.read_text())
+    if existing is not None:
+        journal = existing
         if journal.get("version") != _JOURNAL_VERSION:
             raise ValueError("incompatible search journal version; start a new run")
         if journal["task"] != task or Path(journal["task_path"]) != task_path:
@@ -370,7 +401,7 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
             raise ValueError("search was already finalized")
     else:
         journal = _initialize(task_path, snapshots, journal_path, task, features, seed,
-                              sandbox, device)
+                              sandbox, device, harness_runtime)
     if steps == 0 or "final" in journal or "stop" in journal:
         return journal
 
@@ -436,6 +467,10 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
                            "paired_vs_reference": unreflected.get("paired_vs_reference"),
                            "review": unreflected.get("review"),
                            "error": unreflected.get("error")}
+            if harness_runtime is not None:
+                observation["harness_runtime"] = harness_runtime
+                observation["harness_steps"] = journal["steps"]
+                observation["research"] = unreflected.get("research")
             unreflected["reflection"] = reflect_experiment(provider, observation)
             if (unreflected["status"] == "evaluated"
                     and unreflected["review"]["decision"] == "allow"
@@ -448,7 +483,7 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
 
         if len(journal["steps"]) >= steps:
             return journal
-        context = _context(journal, root)
+        context = _context(journal, root, harness_runtime)
         proposal = propose_candidate(provider, context)
         if proposal["action"] == "stop":
             journal["stop"] = proposal["reason"]
@@ -475,6 +510,9 @@ def run_search(task_path: str | Path, snapshot_dir: str | Path,
                 "expected_result": proposal["expected_result"],
                 "reference_id": journal["best_id"],
                 "feature_requests": proposal.get("feature_requests", [])}
+        if harness_runtime is not None:
+            step["research"] = proposal["research"]
+            step["reference_reads"] = proposal.get("reference_reads", [])
         journal["steps"].append(step)
         _feature_requests(root, journal)
         _save(journal_path, journal)
@@ -489,6 +527,13 @@ def finalize_search(journal_path: str | Path, snapshot_dir: str | Path, *,
     if journal.get("version") != _JOURNAL_VERSION:
         raise ValueError("incompatible search journal version; start a new run")
     task, features, seed = _identity(Path(journal["task_path"]), snapshots, device, docker_image)
+    if (journal.get("harness") or {}).get("mode") == "model-evo":
+        from .harness import build_harness_context
+
+        harness_runtime = build_harness_context(Path(journal["task_path"]), snapshots, task)
+        task["harness_identity"] = harness_runtime["identity"]
+        if journal["harness"]["task_snapshot"] != harness_runtime["task_snapshot"]:
+            raise ValueError("Harness task snapshot changed before finalization")
     if journal["task"] != task:
         raise ValueError("finalization task, snapshots, device, or sandbox image changed")
     if _sha(snapshots / "test.csv") != task["split_sha256"]["test"]:

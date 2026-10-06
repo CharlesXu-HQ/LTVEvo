@@ -149,6 +149,71 @@ def test_search_seals_test_labels_resumes_and_finalizes_once(tmp_path, monkeypat
     assert len(analysis_calls) == 1 and len(seen_inputs) == 7
 
 
+def test_harness_research_is_recorded_and_identity_freezes_resume(tmp_path, monkeypatch):
+    from ltvevo import harness, search
+
+    task_path, snapshots = _task_and_snapshots(tmp_path)
+    journal_path = tmp_path / "runs" / "harness" / "journal.json"
+    identity = {"digest": "first"}
+    seen = {"test_calls": 0}
+
+    def runtime(_task_path, _snapshots, _task_identity):
+        return {"identity": dict(identity),
+                "task_snapshot": {"stage": "ltv_prediction", "objective": {
+                    "name": "mae", "direction": "min"}},
+                "catalog": {}, "prompt_context": {}}
+
+    class FakeSandbox:
+        def __init__(self, _image):
+            pass
+
+        def predict(self, candidate, _train, target, **_kwargs):
+            if len(target) == 2 and "9999" in str(target):
+                seen["test_calls"] += 1
+            value = 2.0 if Path(candidate).name != "zero.py" else 0.0
+            return {"predictions": np.full(len(target), value), "model_device": "cpu"}
+
+    research = {"direction": "Test log target", "mechanism": "Transform skewed values",
+                "input_fields": [FEATURE_COLUMNS[0]]}
+    monkeypatch.setattr(harness, "build_harness_context", runtime)
+    monkeypatch.setattr(search, "DockerSandbox", FakeSandbox)
+
+    def propose(_provider, context):
+        assert context["harness_runtime"]["identity"] == identity
+        assert "9999" not in json.dumps(context)
+        return {"action": "experiment", "hypothesis": "Reduce skew error",
+                "expected_result": "Lower validation MAE", "research": research,
+                "reference_reads": [{"path": "models/pytorch/composition.py", "sha256": "a" * 64}],
+                "candidate_py": "import torch\n"
+                "def fit_predict(train, validation, *, feature_columns, target_column, device, seed):\n"
+                "    return torch.full((len(validation),), 2.0)\n"}
+
+    def reflect(_provider, observation):
+        assert observation["research"] == research
+        assert observation["harness_steps"][0]["research"] == research
+        return {"verdict": "inconclusive", "evidence": "same validation set",
+                "lesson": "No clear gain", "next_direction": "try another transform"}
+
+    monkeypatch.setattr(search, "propose_candidate", propose)
+    monkeypatch.setattr(search, "reflect_experiment", reflect)
+    provider = ApiProvider("https://example.com", "test-model", "secret")
+    journal = run_search(task_path, snapshots, journal_path, provider, steps=1,
+                         device="cpu", docker_image="fake-image", harness="model-evo")
+    assert journal["task"]["harness_identity"] == identity
+    assert journal["steps"][0]["research"] == research
+    assert journal["steps"][0]["reference_reads"][0]["sha256"] == "a" * 64
+    with pytest.raises(ValueError, match="Harness mode changed"):
+        run_search(task_path, snapshots, journal_path, provider, steps=1,
+                   device="cpu", docker_image="fake-image", harness="none")
+    identity["digest"] = "changed"
+    with pytest.raises(ValueError, match="search task"):
+        run_search(task_path, snapshots, journal_path, provider, steps=1,
+                   device="cpu", docker_image="fake-image")
+    with pytest.raises(ValueError, match="finalization task"):
+        finalize_search(journal_path, snapshots, device="cpu", docker_image="fake-image")
+    assert "final" not in json.loads(journal_path.read_text())
+
+
 def test_zero_reference_can_win_validation_and_is_compared_on_final_test(tmp_path, monkeypatch):
     from ltvevo import search
 
@@ -300,8 +365,8 @@ def test_provider_enables_thinking_and_effort_without_disclosing_key(monkeypatch
     assert request_json(client, "max", [{"role": "user", "content": "Return JSON"}]) == {"ok": True}
     assert captured["thinking"] == {"type": "enabled"}
     assert captured["reasoning_effort"] == "max"
-    with pytest.raises(ValueError, match="disabled"):
-        ApiProvider("https://api.deepseek.com", "deepseek-flash", "secret", thinking="disabled")
+    assert ApiProvider("https://api.deepseek.com", "deepseek-flash", "secret",
+                       thinking="disabled").thinking == "disabled"
 
 
 def test_provider_error_keeps_reason_but_redacts_key(monkeypatch):

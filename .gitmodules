@@ -1,0 +1,3 @@
+[submodule "third_party/model-evo-harness"]
+	path = third_party/model-evo-harness
+	url = https://github.com/CharlesXu-HQ/ModelEvoHarness.git

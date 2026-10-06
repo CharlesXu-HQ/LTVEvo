@@ -23,6 +23,7 @@ class ApiProvider:
     thinking: str = "enabled"
     iteration_effort: str = "high"
     review_effort: str = "max"
+    send_reasoning_effort: bool = True
 
     def __post_init__(self) -> None:
         parts = urlsplit(self.url)
@@ -31,8 +32,8 @@ class ApiProvider:
             raise ValueError("provider URL must be an HTTP(S) base URL or chat/completions endpoint")
         if not self.model or not self.api_key:
             raise ValueError("provider model and API key are required")
-        if self.thinking not in {"enabled", "omit"}:
-            raise ValueError("thinking must be enabled or omitted; disabled defeats high/max effort")
+        if self.thinking not in {"enabled", "disabled", "omit"}:
+            raise ValueError("thinking must be enabled, disabled, or omitted")
         if self.iteration_effort not in {"high", "max"} or self.review_effort != "max":
             raise ValueError("iteration effort must be high/max and anomaly review must be max")
 
@@ -46,11 +47,12 @@ def request_json(provider: ApiProvider, effort: str, messages: list[dict], *,
                  max_tokens: int = 16384, timeout: int = 180) -> dict:
     if effort not in {"high", "max"}:
         raise ValueError("Agent effort must be high or max")
-    payload = {"model": provider.model, "reasoning_effort": effort,
-               "response_format": {"type": "json_object"},
+    payload = {"model": provider.model, "response_format": {"type": "json_object"},
                "max_tokens": max_tokens, "messages": messages}
-    if provider.thinking == "enabled":
-        payload["thinking"] = {"type": "enabled"}
+    if provider.send_reasoning_effort:
+        payload["reasoning_effort"] = effort
+    if provider.thinking != "omit":
+        payload["thinking"] = {"type": provider.thinking}
     request = urllib.request.Request(
         provider.endpoint, data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {provider.api_key}",
